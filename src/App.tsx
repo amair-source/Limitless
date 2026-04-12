@@ -224,7 +224,9 @@ export default function App() {
       setIsSending(false);
     }
   };
-
+export default function App() {
+  return <h1>App is working 🚀</h1>;
+}
   if (loading) {
     return (
       <div className="flex items-center justify-center h-screen bg-zinc-950 text-zinc-100">
