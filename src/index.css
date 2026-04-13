@@ -8,6 +8,47 @@
 
 @layer base {
   body {
-    @apply font-sans antialiased;
+    @apply font-sans antialiased bg-zinc-950 text-zinc-100;
+    margin: 0;
+    padding: 0;
+  }
+}
+
+@layer utilities {
+  .glass {
+    @apply bg-zinc-900/60 backdrop-blur-md border border-white/10 shadow-sm;
+  }
+  
+  .glass-darker {
+    @apply bg-black/40 backdrop-blur-3xl border-r border-white/10;
+  }
+
+  .atmosphere {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background: 
+      radial-gradient(circle at 50% -20%, rgba(63, 63, 70, 0.15) 0%, transparent 50%),
+      radial-gradient(circle at 100% 100%, rgba(24, 24, 27, 0.3) 0%, transparent 50%),
+      radial-gradient(circle at 0% 100%, rgba(39, 39, 42, 0.1) 0%, transparent 50%);
+    pointer-events: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 4px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-white/10 rounded-full hover:bg-white/20 transition-colors;
   }
 }

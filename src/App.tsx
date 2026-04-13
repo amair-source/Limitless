@@ -2,12 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from './lib/AuthContext';
 import { signInWithGoogle, logout, db } from './lib/firebase';
 import { collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp, doc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
-import { MessageSquare, Plus, LogOut, Send, User as UserIcon, Bot, Settings, Trash2, Menu, X, ChevronRight, Github, Search, Download, Image as ImageIcon, Sliders, ChevronDown } from 'lucide-react';
+import { MessageSquare, Plus, LogOut, Send, User as UserIcon, Bot, Settings, Trash2, Menu, X, ChevronRight, Github, Search, Copy, ThumbsUp, ThumbsDown, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
 import { cn } from './lib/utils';
 import { DEFAULT_MODELS, ChatModel } from './constants';
-import { chatWithGemini, chatWithUncensored, imageToImageUncensored } from './lib/ai';
+import { chatWithGemini, chatWithUncensored } from './lib/ai';
 import { handleFirestoreError, OperationType } from './lib/firestore-errors';
 
 export default function App() {
@@ -16,21 +16,17 @@ export default function App() {
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<any[]>([]);
   const [input, setInput] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSending, setIsSending] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [customModels, setCustomModels] = useState<ChatModel[]>([]);
+  const [newModelRepo, setNewModelRepo] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   // Chat settings
   const [selectedModel, setSelectedModel] = useState<ChatModel>(DEFAULT_MODELS[0]);
-  const [selectedVersion, setSelectedVersion] = useState<string>(DEFAULT_MODELS[0].versions?.[0] || 'latest');
   const [systemMessage, setSystemMessage] = useState('');
-  const [temperature, setTemperature] = useState(0.7);
-  const [maxTokens, setMaxTokens] = useState(2048);
-
-  // Image to Image
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -83,10 +79,7 @@ export default function App() {
     if (chat) {
       const model = DEFAULT_MODELS.find(m => m.id === chat.modelId) || DEFAULT_MODELS[0];
       setSelectedModel(model);
-      setSelectedVersion(chat.version || model.versions?.[0] || 'latest');
       setSystemMessage(chat.systemMessage || '');
-      setTemperature(chat.temperature || 0.7);
-      setMaxTokens(chat.maxTokens || 2048);
     }
 
     return () => unsubscribe();
@@ -98,10 +91,7 @@ export default function App() {
       userId: user.uid,
       title: 'New Chat',
       modelId: selectedModel.id,
-      version: selectedVersion,
       systemMessage: systemMessage,
-      temperature: temperature,
-      maxTokens: maxTokens,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
@@ -128,50 +118,13 @@ export default function App() {
     }
   };
 
-  const filteredChats = chats.filter(chat => 
-    chat.title.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
-  const exportChat = (format: 'txt' | 'json') => {
-    if (messages.length === 0) return;
-    
-    let content = '';
-    const filename = `chat-export-${currentChatId}.${format}`;
-    
-    if (format === 'json') {
-      content = JSON.stringify(messages, null, 2);
-    } else {
-      content = messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n');
-    }
-    
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setSelectedImage(reader.result as string);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || !user || !currentChatId || isSending) return;
 
     const userMessage = input.trim();
-    const imageToProcess = selectedImage;
+    const currentHistory = [...messages]; // Capture current state before addDoc
     setInput('');
-    setSelectedImage(null);
     setIsSending(true);
 
     try {
@@ -180,12 +133,11 @@ export default function App() {
         chatId: currentChatId,
         role: 'user',
         content: userMessage,
-        image: imageToProcess,
         createdAt: serverTimestamp(),
       });
 
       // Update chat title if it's the first message
-      if (messages.length === 0) {
+      if (currentHistory.length === 0) {
         await updateDoc(doc(db, 'chats', currentChatId), {
           title: userMessage.slice(0, 30) + (userMessage.length > 30 ? '...' : ''),
           updatedAt: serverTimestamp(),
@@ -197,17 +149,14 @@ export default function App() {
       }
 
       // 2. Get AI response
-      const chatHistory = [...messages, { role: 'user', content: userMessage, image: imageToProcess }];
+      // Construct history carefully to avoid race conditions with onSnapshot
+      const chatHistory = [...currentHistory, { role: 'user', content: userMessage }];
       let aiResponse = '';
       
-      const config = { temperature, maxOutputTokens: maxTokens };
-
-      if (imageToProcess && selectedModel.isUncensored) {
-        aiResponse = await imageToImageUncensored(imageToProcess, userMessage);
-      } else if (selectedModel.isUncensored) {
-        aiResponse = await chatWithUncensored(selectedModel.id, chatHistory, systemMessage, config);
+      if (selectedModel.isUncensored) {
+        aiResponse = await chatWithUncensored(selectedModel.id, chatHistory, systemMessage);
       } else {
-        aiResponse = await chatWithGemini(selectedModel.id, chatHistory, systemMessage, config);
+        aiResponse = await chatWithGemini(selectedModel.id, chatHistory, systemMessage);
       }
 
       // 3. Add AI message to Firestore
@@ -216,6 +165,7 @@ export default function App() {
         role: 'assistant',
         content: aiResponse,
         createdAt: serverTimestamp(),
+        feedback: null, // Initial feedback state
       });
 
     } catch (error) {
@@ -224,9 +174,44 @@ export default function App() {
       setIsSending(false);
     }
   };
-export default function App() {
-  return <h1>App is working 🚀</h1>;
-}
+
+  const handleFeedback = async (messageId: string, type: 'up' | 'down') => {
+    if (!currentChatId) return;
+    try {
+      await updateDoc(doc(db, `chats/${currentChatId}/messages`, messageId), {
+        feedback: type,
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `chats/${currentChatId}/messages/${messageId}`);
+    }
+  };
+
+  const copyToClipboard = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const addCustomModel = () => {
+    if (!newModelRepo.trim()) return;
+    const repoName = newModelRepo.split('/').pop() || newModelRepo;
+    const newModel: ChatModel = {
+      id: newModelRepo.trim(),
+      name: repoName,
+      description: `Custom model from ${newModelRepo}`,
+      hfRepo: newModelRepo.trim(),
+      isUncensored: true,
+    };
+    setCustomModels([...customModels, newModel]);
+    setNewModelRepo('');
+  };
+
+  const allModels = [...DEFAULT_MODELS, ...customModels];
+
+  const filteredChats = chats.filter(chat => 
+    chat.title?.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-screen bg-zinc-950 text-zinc-100">
@@ -241,29 +226,49 @@ export default function App() {
 
   if (!user) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen bg-zinc-950 text-zinc-100 p-4">
+      <div className="flex flex-col items-center justify-center h-screen bg-zinc-950 text-zinc-100 p-4 relative overflow-hidden">
+        <div className="atmosphere" />
         <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="max-w-md w-full text-center space-y-8"
+          initial={{ opacity: 0, y: 40, filter: "blur(20px)" }}
+          animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+          transition={{ duration: 0.8, ease: "easeOut" }}
+          className="max-w-md w-full text-center space-y-12 relative z-10"
         >
-          <div className="space-y-2">
-            <h1 className="text-5xl font-bold tracking-tighter bg-gradient-to-r from-zinc-100 to-zinc-500 bg-clip-text text-transparent">
-              limitlessAssistant
-            </h1>
-            <p className="text-zinc-400 text-lg">Uncensored AI at your fingertips.</p>
+          <div className="space-y-4">
+            <motion.div 
+              initial={{ scale: 0.8 }}
+              animate={{ scale: 1 }}
+              className="w-24 h-24 glass rounded-[40px] mx-auto flex items-center justify-center border-white/10 shadow-2xl"
+            >
+              <Bot size={48} className="text-white" />
+            </motion.div>
+            <div className="space-y-2">
+              <h1 className="text-6xl font-black tracking-tighter bg-gradient-to-br from-white via-white to-zinc-600 bg-clip-text text-transparent">
+                limitless
+              </h1>
+              <p className="text-zinc-500 font-medium tracking-widest uppercase text-[10px]">Uncensored Intelligence</p>
+            </div>
           </div>
           
-          <div className="p-8 bg-zinc-900/50 border border-zinc-800 rounded-3xl backdrop-blur-xl">
+          <div className="p-10 glass rounded-[40px] border-white/5 shadow-2xl space-y-6">
+            <div className="space-y-2">
+              <h2 className="text-xl font-bold">Welcome Back</h2>
+              <p className="text-sm text-zinc-500">Sign in to access your private conversations and custom models.</p>
+            </div>
             <button 
               onClick={signInWithGoogle}
-              className="w-full flex items-center justify-center gap-3 bg-zinc-100 text-zinc-950 py-4 px-6 rounded-2xl font-semibold hover:bg-zinc-200 transition-all active:scale-95"
+              className="w-full flex items-center justify-center gap-3 bg-white text-black py-5 px-6 rounded-2xl font-bold hover:bg-zinc-200 transition-all active:scale-95 shadow-xl shadow-white/5"
             >
               <img src="https://www.google.com/favicon.ico" className="w-5 h-5" alt="Google" />
-              Sign in with Google
+              Continue with Google
             </button>
-            <p className="mt-4 text-xs text-zinc-500">
-              By signing in, you agree to our terms of service and privacy policy.
+            <div className="flex items-center gap-4 py-2">
+              <div className="h-px flex-1 bg-white/5" />
+              <span className="text-[10px] font-black uppercase tracking-widest text-zinc-700">Secure Access</span>
+              <div className="h-px flex-1 bg-white/5" />
+            </div>
+            <p className="text-[10px] text-zinc-600 font-medium leading-relaxed">
+              Your data is encrypted and stored securely in our private cloud infrastructure.
             </p>
           </div>
         </motion.div>
@@ -272,70 +277,104 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen bg-zinc-950 text-zinc-100 overflow-hidden">
+    <div className="flex h-screen bg-zinc-950 text-zinc-100 overflow-hidden relative">
+      <div className="atmosphere" />
+      
+      {/* Sidebar Overlay for Mobile */}
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsSidebarOpen(false)}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-30 lg:hidden"
+          />
+        )}
+      </AnimatePresence>
+
       {/* Sidebar */}
       <motion.aside 
         initial={false}
-        animate={{ width: isSidebarOpen ? 300 : 0, opacity: isSidebarOpen ? 1 : 0 }}
-        className="bg-zinc-900 border-r border-zinc-800 flex flex-col relative z-20"
+        animate={{ 
+          width: isSidebarOpen ? 300 : 0,
+          x: isSidebarOpen ? 0 : -300,
+          opacity: isSidebarOpen ? 1 : 0 
+        }}
+        transition={{ type: "spring", damping: 25, stiffness: 200 }}
+        className={cn(
+          "fixed lg:relative h-full glass-darker flex flex-col z-40 overflow-hidden",
+          !isSidebarOpen && "pointer-events-none"
+        )}
       >
-        <div className="p-4 flex items-center justify-between border-b border-zinc-800">
-          <h2 className="font-bold text-lg truncate">limitlessAssistant</h2>
-          <button onClick={() => setIsSidebarOpen(false)} className="p-2 hover:bg-zinc-800 rounded-lg lg:hidden">
+        <div className="p-6 flex items-center justify-between border-b border-white/5">
+          <h2 className="font-bold text-xl tracking-tight bg-gradient-to-br from-white to-zinc-500 bg-clip-text text-transparent">
+            limitless
+          </h2>
+          <button onClick={() => setIsSidebarOpen(false)} className="p-2 hover:bg-white/5 rounded-xl transition-colors lg:hidden">
             <X size={20} />
           </button>
         </div>
 
-        <div className="p-4 space-y-4">
-          <div className="relative">
-            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
-            <input 
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search chats..."
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl py-2 pl-9 pr-4 text-xs focus:outline-none focus:ring-1 focus:ring-zinc-700 transition-all"
-            />
-          </div>
+        <div className="p-4 space-y-3">
           <button 
             onClick={createNewChat}
-            className="w-full flex items-center gap-2 bg-zinc-100 text-zinc-950 py-3 px-4 rounded-xl font-medium hover:bg-zinc-200 transition-all active:scale-95"
+            className="w-full flex items-center justify-center gap-2 bg-white text-black py-3 px-4 rounded-2xl font-bold hover:bg-zinc-200 transition-all active:scale-95 shadow-lg shadow-white/5"
           >
             <Plus size={18} />
             New Chat
           </button>
+
+          <div className="relative group">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 group-focus-within:text-white transition-colors" />
+            <input 
+              type="text"
+              placeholder="Search chats..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-white/5 border border-white/5 rounded-xl py-2 pl-9 pr-4 text-xs focus:outline-none focus:border-white/20 transition-all placeholder:text-zinc-600"
+            />
+          </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-2 space-y-1">
+        <div className="flex-1 overflow-y-auto px-3 space-y-1 custom-scrollbar">
           {filteredChats.map(chat => (
-            <button
+            <motion.button
+              layout
               key={chat.id}
-              onClick={() => setCurrentChatId(chat.id)}
+              onClick={() => {
+                setCurrentChatId(chat.id);
+                if (window.innerWidth < 1024) setIsSidebarOpen(false);
+              }}
               className={cn(
-                "w-full flex items-center justify-between gap-3 p-3 rounded-xl text-left transition-all group",
-                currentChatId === chat.id ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-200"
+                "w-full flex items-center justify-between gap-3 p-3 rounded-2xl text-left transition-all group relative",
+                currentChatId === chat.id ? "bg-white/10 text-white" : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
               )}
             >
               <div className="flex items-center gap-3 truncate">
-                <MessageSquare size={18} className="shrink-0" />
+                <MessageSquare size={18} className={cn("shrink-0", currentChatId === chat.id ? "text-white" : "text-zinc-600")} />
                 <span className="truncate text-sm font-medium">{chat.title}</span>
               </div>
               <Trash2 
-                size={16} 
-                className="opacity-0 group-hover:opacity-100 hover:text-red-400 transition-opacity"
+                size={14} 
+                className="opacity-0 group-hover:opacity-100 hover:text-red-400 transition-all"
                 onClick={(e) => deleteChat(chat.id, e)}
               />
-            </button>
+              {currentChatId === chat.id && (
+                <motion.div layoutId="active-chat" className="absolute left-0 w-1 h-6 bg-white rounded-r-full" />
+              )}
+            </motion.button>
           ))}
         </div>
 
-        <div className="p-4 border-t border-zinc-800 space-y-4">
-          <div className="flex items-center gap-3 p-2">
-            <img src={user.photoURL || ''} className="w-8 h-8 rounded-full border border-zinc-700" alt="User" />
+        <div className="p-4 border-t border-white/5">
+          <div className="flex items-center gap-3 p-3 glass rounded-2xl border-white/10">
+            <img src={user.photoURL || ''} className="w-9 h-9 rounded-xl border border-white/10" alt="User" />
             <div className="flex-1 truncate">
-              <p className="text-sm font-medium truncate">{user.displayName}</p>
-              <p className="text-xs text-zinc-500 truncate">{user.email}</p>
+              <p className="text-sm font-semibold truncate">{user.displayName}</p>
+              <p className="text-[10px] text-zinc-500 truncate uppercase tracking-wider">{user.email}</p>
             </div>
-            <button onClick={logout} className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-zinc-100">
+            <button onClick={logout} className="p-2 hover:bg-white/10 rounded-xl text-zinc-500 hover:text-white transition-colors">
               <LogOut size={18} />
             </button>
           </div>
@@ -343,53 +382,38 @@ export default function App() {
       </motion.aside>
 
       {/* Main Chat Area */}
-      <main className="flex-1 flex flex-col relative min-w-0">
+      <main className="flex-1 flex flex-col relative min-w-0 bg-transparent">
         {/* Header */}
-        <header className="h-16 border-b border-zinc-800 flex items-center justify-between px-4 bg-zinc-950/50 backdrop-blur-md z-10">
-          <div className="flex items-center gap-3">
+        <header className="h-20 border-b border-white/5 flex items-center justify-between px-6 glass z-20">
+          <div className="flex items-center gap-4">
             {!isSidebarOpen && (
-              <button onClick={() => setIsSidebarOpen(true)} className="p-2 hover:bg-zinc-800 rounded-lg">
+              <button onClick={() => setIsSidebarOpen(true)} className="p-2.5 hover:bg-white/5 rounded-xl transition-colors border border-white/5">
                 <Menu size={20} />
               </button>
             )}
             {currentChatId ? (
-              <div className="flex items-center gap-2">
-                <span className="font-medium truncate max-w-[200px] sm:max-w-md">
+              <div className="flex flex-col">
+                <span className="font-bold text-sm truncate max-w-[150px] sm:max-w-md">
                   {chats.find(c => c.id === currentChatId)?.title || 'Chat'}
                 </span>
-                <span className="px-2 py-0.5 bg-zinc-800 text-[10px] uppercase tracking-wider font-bold rounded-md text-zinc-400">
-                  {selectedModel.name}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  <span className="text-[10px] uppercase tracking-widest font-black text-zinc-500">
+                    {selectedModel.name}
+                  </span>
+                </div>
               </div>
             ) : (
-              <span className="font-medium">Select or create a chat</span>
+              <span className="font-bold text-zinc-500 uppercase tracking-widest text-xs">Select a conversation</span>
             )}
           </div>
           
-          <div className="flex items-center gap-2">
-            <div className="flex items-center bg-zinc-900 rounded-lg p-1">
-              <button 
-                onClick={() => exportChat('txt')}
-                disabled={messages.length === 0}
-                className="p-1.5 hover:bg-zinc-800 rounded-md text-zinc-400 hover:text-zinc-100 disabled:opacity-30"
-                title="Export as TXT"
-              >
-                <Download size={16} />
-              </button>
-              <button 
-                onClick={() => exportChat('json')}
-                disabled={messages.length === 0}
-                className="p-1.5 hover:bg-zinc-800 rounded-md text-zinc-400 hover:text-zinc-100 disabled:opacity-30"
-                title="Export as JSON"
-              >
-                <ChevronDown size={16} />
-              </button>
-            </div>
+          <div className="flex items-center gap-3">
             <button 
               onClick={() => setShowSettings(!showSettings)}
               className={cn(
-                "p-2 rounded-lg transition-colors",
-                showSettings ? "bg-zinc-100 text-zinc-950" : "hover:bg-zinc-800 text-zinc-400"
+                "p-2.5 rounded-xl transition-all border",
+                showSettings ? "bg-white text-black border-white" : "hover:bg-white/5 text-zinc-400 border-white/5"
               )}
             >
               <Settings size={20} />
@@ -398,126 +422,165 @@ export default function App() {
         </header>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-6 scroll-smooth">
-          {messages.length === 0 && currentChatId && (
-            <div className="h-full flex flex-col items-center justify-center text-center space-y-4 max-w-md mx-auto">
-              <div className="w-16 h-16 bg-zinc-900 rounded-2xl flex items-center justify-center border border-zinc-800">
-                <Bot size={32} className="text-zinc-400" />
-              </div>
-              <div className="space-y-2">
-                <h3 className="text-xl font-bold">Start a conversation</h3>
-                <p className="text-zinc-500 text-sm">
-                  You're chatting with <span className="text-zinc-300 font-medium">{selectedModel.name}</span>. 
-                  {selectedModel.isUncensored ? " This model is uncensored and will follow your instructions without restrictions." : " This is a standard model with safety guidelines."}
-                </p>
-              </div>
-            </div>
-          )}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-8 no-scrollbar scroll-smooth">
+          <AnimatePresence mode="popLayout">
+            {messages.length === 0 && currentChatId && (
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.9, filter: "blur(4px)" }}
+                animate={{ opacity: 1, scale: 1, filter: "blur(0px)" }}
+                exit={{ opacity: 0, scale: 0.9, filter: "blur(4px)" }}
+                className="h-full flex flex-col items-center justify-center text-center space-y-6 max-w-lg mx-auto"
+              >
+                <div className="w-20 h-20 glass rounded-3xl flex items-center justify-center border-white/10 shadow-2xl">
+                  <Bot size={40} className="text-zinc-400" />
+                </div>
+                <div className="space-y-3">
+                  <h3 className="text-3xl font-bold tracking-tight">Limitless Potential</h3>
+                  <p className="text-zinc-500 text-sm leading-relaxed">
+                    You're chatting with <span className="text-white font-semibold">{selectedModel.name}</span>. 
+                    {selectedModel.isUncensored 
+                      ? " This model is uncensored and will follow your instructions without restrictions." 
+                      : " This is a standard model with safety guidelines."}
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-3 w-full">
+                  {['Write a story', 'Explain quantum physics', 'Code a snake game', 'Roleplay as a pirate'].map(suggestion => (
+                    <button 
+                      key={suggestion}
+                      onClick={() => setInput(suggestion)}
+                      className="p-4 glass rounded-2xl text-xs font-medium text-zinc-400 hover:text-white hover:border-white/20 transition-all text-left"
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              </motion.div>
+            )}
 
-          {messages.map((msg, idx) => (
+            {messages.map((msg, idx) => (
+              <motion.div 
+                key={msg.id || idx}
+                initial={{ opacity: 0, y: 20, filter: "blur(4px)" }}
+                animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+                className={cn(
+                  "flex gap-4 sm:gap-6 max-w-5xl mx-auto group",
+                  msg.role === 'user' ? "flex-row-reverse" : ""
+                )}
+              >
+                <div className={cn(
+                  "w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 border shadow-lg",
+                  msg.role === 'user' ? "bg-white border-white text-black" : "glass border-white/10 text-zinc-400"
+                )}>
+                  {msg.role === 'user' ? <UserIcon size={20} /> : <Bot size={20} />}
+                </div>
+                <div className={cn(
+                  "flex flex-col space-y-2 min-w-0 max-w-[85%] sm:max-w-[75%]",
+                  msg.role === 'user' ? "items-end" : "items-start"
+                )}>
+                  <div className={cn(
+                    "p-5 rounded-3xl text-sm leading-relaxed shadow-xl relative group/msg",
+                    msg.role === 'user' 
+                      ? "bg-zinc-800 text-zinc-100 rounded-tr-none" 
+                      : "glass text-zinc-300 rounded-tl-none"
+                  )}>
+                    <div className="prose prose-invert prose-sm max-w-none prose-p:leading-relaxed prose-pre:bg-black/50 prose-pre:border prose-pre:border-white/5">
+                      <ReactMarkdown>{msg.content}</ReactMarkdown>
+                    </div>
+                    
+                    {/* Message Actions */}
+                    <div className={cn(
+                      "absolute top-2 opacity-0 group-hover/msg:opacity-100 transition-opacity flex items-center gap-1 bg-zinc-900/80 backdrop-blur-md p-1 rounded-lg border border-white/10",
+                      msg.role === 'user' ? "right-full mr-2" : "left-full ml-2"
+                    )}>
+                      <button 
+                        onClick={() => copyToClipboard(msg.content, msg.id)}
+                        className="p-1.5 hover:bg-white/10 rounded-md text-zinc-400 hover:text-white transition-colors"
+                        title="Copy to clipboard"
+                      >
+                        {copiedId === msg.id ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} />}
+                      </button>
+                      {msg.role === 'assistant' && (
+                        <>
+                          <button 
+                            onClick={() => handleFeedback(msg.id, 'up')}
+                            className={cn(
+                              "p-1.5 hover:bg-white/10 rounded-md transition-colors",
+                              msg.feedback === 'up' ? "text-emerald-500" : "text-zinc-400 hover:text-white"
+                            )}
+                            title="Helpful"
+                          >
+                            <ThumbsUp size={14} />
+                          </button>
+                          <button 
+                            onClick={() => handleFeedback(msg.id, 'down')}
+                            className={cn(
+                              "p-1.5 hover:bg-white/10 rounded-md transition-colors",
+                              msg.feedback === 'down' ? "text-red-500" : "text-zinc-400 hover:text-white"
+                            )}
+                            title="Not helpful"
+                          >
+                            <ThumbsDown size={14} />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <span className="text-[10px] uppercase tracking-widest font-bold text-zinc-600 px-2">
+                    {msg.createdAt?.toDate ? msg.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Just now'}
+                  </span>
+                </div>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+          
+          {isSending && (
             <motion.div 
-              key={msg.id || idx}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              className={cn(
-                "flex gap-4 max-w-4xl mx-auto group",
-                msg.role === 'user' ? "flex-row-reverse" : ""
-              )}
+              className="flex gap-4 sm:gap-6 max-w-5xl mx-auto"
             >
-              <div className={cn(
-                "w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border",
-                msg.role === 'user' ? "bg-zinc-100 border-zinc-200 text-zinc-950" : "bg-zinc-900 border-zinc-800 text-zinc-400"
-              )}>
-                {msg.role === 'user' ? <UserIcon size={16} /> : <Bot size={16} />}
+              <div className="w-10 h-10 rounded-2xl glass border border-white/10 flex items-center justify-center text-zinc-400">
+                <Bot size={20} />
               </div>
-              <div className={cn(
-                "flex flex-col space-y-1 min-w-0",
-                msg.role === 'user' ? "items-end" : "items-start"
-              )}>
-                <div className={cn(
-                  "p-4 rounded-2xl text-sm leading-relaxed",
-                  msg.role === 'user' ? "bg-zinc-800 text-zinc-100" : "bg-zinc-900/50 text-zinc-300 border border-zinc-800/50"
-                )}>
-                  {msg.image && (
-                    <img src={msg.image} className="max-w-xs rounded-lg mb-3 border border-zinc-700" alt="Uploaded" />
-                  )}
-                  <div className="prose prose-invert prose-sm max-w-none">
-                    <ReactMarkdown>{msg.content}</ReactMarkdown>
-                  </div>
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-1.5 p-5 glass rounded-3xl rounded-tl-none border-white/5">
+                  <motion.span animate={{ scale: [1, 1.5, 1], opacity: [0.5, 1, 0.5] }} transition={{ repeat: Infinity, duration: 1 }} className="w-2 h-2 bg-white rounded-full" />
+                  <motion.span animate={{ scale: [1, 1.5, 1], opacity: [0.5, 1, 0.5] }} transition={{ repeat: Infinity, duration: 1, delay: 0.2 }} className="w-2 h-2 bg-white rounded-full" />
+                  <motion.span animate={{ scale: [1, 1.5, 1], opacity: [0.5, 1, 0.5] }} transition={{ repeat: Infinity, duration: 1, delay: 0.4 }} className="w-2 h-2 bg-white rounded-full" />
                 </div>
-                <span className="text-[10px] text-zinc-600 px-1">
-                  {msg.createdAt?.toDate ? msg.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Just now'}
+                <span className="text-[10px] uppercase tracking-[0.2em] font-black text-zinc-600 px-2 animate-pulse">
+                  AI is thinking...
                 </span>
               </div>
             </motion.div>
-          ))}
-          {isSending && (
-            <div className="flex gap-4 max-w-4xl mx-auto">
-              <div className="w-8 h-8 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center text-zinc-400">
-                <Bot size={16} />
-              </div>
-              <div className="flex items-center gap-1 p-4 bg-zinc-900/50 rounded-2xl border border-zinc-800/50">
-                <span className="w-1.5 h-1.5 bg-zinc-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                <span className="w-1.5 h-1.5 bg-zinc-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                <span className="w-1.5 h-1.5 bg-zinc-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-              </div>
-            </div>
           )}
-          <div ref={messagesEndRef} />
+          <div ref={messagesEndRef} className="h-4" />
         </div>
 
         {/* Input Area */}
-        <div className="p-4 bg-zinc-950">
+        <div className="p-4 sm:p-8 bg-transparent">
           <form 
             onSubmit={handleSendMessage}
-            className="max-w-4xl mx-auto relative"
+            className="max-w-4xl mx-auto relative group"
           >
-            {selectedImage && (
-              <div className="absolute bottom-full left-0 mb-2 p-2 bg-zinc-900 border border-zinc-800 rounded-xl flex items-center gap-2">
-                <img src={selectedImage} className="w-12 h-12 object-cover rounded-lg" alt="Preview" />
-                <button 
-                  type="button"
-                  onClick={() => setSelectedImage(null)}
-                  className="p-1 hover:bg-zinc-800 rounded-full text-zinc-400"
-                >
-                  <X size={14} />
-                </button>
-              </div>
-            )}
+            <div className="absolute -inset-1 bg-gradient-to-r from-white/20 to-zinc-500/20 rounded-[28px] blur opacity-25 group-focus-within:opacity-100 transition duration-1000 group-focus-within:duration-200" />
             <input 
-              type="file"
-              ref={fileInputRef}
-              onChange={handleImageUpload}
-              accept="image/*"
-              className="hidden"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder={currentChatId ? "Ask anything..." : "Select a chat to begin"}
+              disabled={!currentChatId || isSending}
+              className="relative w-full glass border-white/10 rounded-[24px] py-5 pl-6 pr-16 focus:outline-none focus:border-white/20 transition-all disabled:opacity-50 text-sm placeholder:text-zinc-600"
             />
-            <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-2xl p-2 focus-within:ring-2 focus-within:ring-zinc-700 transition-all">
-              <button 
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={!currentChatId || isSending}
-                className="p-2 hover:bg-zinc-800 rounded-xl text-zinc-400 transition-colors disabled:opacity-50"
-              >
-                <ImageIcon size={20} />
-              </button>
-              <input 
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder={currentChatId ? "Type a message..." : "Select a chat to start typing"}
-                disabled={!currentChatId || isSending}
-                className="flex-1 bg-transparent py-2 focus:outline-none disabled:opacity-50"
-              />
-              <button 
-                type="submit"
-                disabled={!input.trim() || isSending || !currentChatId}
-                className="w-10 h-10 bg-zinc-100 text-zinc-950 rounded-xl flex items-center justify-center hover:bg-zinc-200 transition-all active:scale-90 disabled:opacity-50 disabled:scale-100"
-              >
-                <Send size={18} />
-              </button>
-            </div>
+            <button 
+              type="submit"
+              disabled={!input.trim() || isSending || !currentChatId}
+              className="absolute right-3 top-3 bottom-3 w-12 bg-white text-black rounded-2xl flex items-center justify-center hover:bg-zinc-200 transition-all active:scale-90 disabled:opacity-50 disabled:scale-100 shadow-xl"
+            >
+              <Send size={20} />
+            </button>
           </form>
-          <p className="text-center text-[10px] text-zinc-600 mt-2">
-            limitlessAssistant can make mistakes. Check important info.
+          <p className="text-center text-[10px] font-bold uppercase tracking-widest text-zinc-700 mt-4">
+            limitlessAssistant • Uncensored Intelligence
           </p>
         </div>
 
@@ -530,129 +593,95 @@ export default function App() {
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 onClick={() => setShowSettings(false)}
-                className="absolute inset-0 bg-zinc-950/60 backdrop-blur-sm z-30"
+                className="absolute inset-0 bg-black/60 backdrop-blur-md z-30"
               />
               <motion.div 
-                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                initial={{ opacity: 0, scale: 0.9, y: 40 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                className="absolute top-20 right-4 left-4 sm:left-auto sm:right-4 sm:w-[400px] bg-zinc-900 border border-zinc-800 rounded-3xl shadow-2xl z-40 overflow-hidden"
+                exit={{ opacity: 0, scale: 0.9, y: 40 }}
+                className="absolute bottom-4 sm:bottom-auto sm:top-24 right-4 left-4 sm:left-auto sm:right-8 sm:w-[450px] glass border-white/10 rounded-[32px] shadow-2xl z-40 overflow-hidden"
               >
-                <div className="p-6 space-y-6">
+                <div className="p-8 space-y-8">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-bold">Chat Settings</h3>
-                    <button onClick={() => setShowSettings(false)} className="p-1 hover:bg-zinc-800 rounded-md">
+                    <div className="space-y-1">
+                      <h3 className="text-2xl font-bold tracking-tight">Settings</h3>
+                      <p className="text-xs text-zinc-500 uppercase tracking-widest font-bold">Configure your assistant</p>
+                    </div>
+                    <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-white/5 rounded-xl transition-colors">
                       <X size={20} />
                     </button>
                   </div>
 
-                  <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
-                    <div className="space-y-2">
-                      <label className="text-xs font-bold uppercase tracking-wider text-zinc-500">Model Selection</label>
-                      <div className="grid grid-cols-1 gap-2">
-                        {DEFAULT_MODELS.map(model => (
-                          <div key={model.id} className="space-y-1">
-                            <button
-                              onClick={() => {
-                                setSelectedModel(model);
-                                setSelectedVersion(model.versions?.[0] || 'latest');
-                              }}
-                              className={cn(
-                                "w-full flex flex-col p-3 rounded-xl border text-left transition-all",
-                                selectedModel.id === model.id 
-                                  ? "bg-zinc-100 border-zinc-100 text-zinc-950" 
-                                  : "bg-zinc-950 border-zinc-800 text-zinc-400 hover:border-zinc-700"
-                              )}
-                            >
-                              <div className="flex items-center justify-between">
-                                <span className="font-bold text-sm">{model.name}</span>
-                                {model.isUncensored && (
-                                  <span className={cn(
-                                    "text-[8px] px-1.5 py-0.5 rounded font-black uppercase",
-                                    selectedModel.id === model.id ? "bg-zinc-950 text-zinc-100" : "bg-red-500/10 text-red-500"
-                                  )}>
-                                    Uncensored
-                                  </span>
-                                )}
-                              </div>
-                              <span className="text-xs opacity-70 mt-1">{model.description}</span>
-                            </button>
-                            
-                            {selectedModel.id === model.id && model.versions && (
-                              <div className="flex flex-wrap gap-1 p-1 bg-zinc-800/50 rounded-lg">
-                                {model.versions.map(v => (
-                                  <button
-                                    key={v}
-                                    onClick={() => setSelectedVersion(v)}
-                                    className={cn(
-                                      "px-2 py-1 rounded text-[10px] font-bold transition-all",
-                                      selectedVersion === v 
-                                        ? "bg-zinc-100 text-zinc-950" 
-                                        : "text-zinc-500 hover:text-zinc-300"
-                                    )}
-                                  >
-                                    {v}
-                                  </button>
-                                ))}
-                              </div>
+                  <div className="space-y-6">
+                    <div className="space-y-3">
+                      <label className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-500">Model Engine</label>
+                      <div className="grid grid-cols-1 gap-2 max-h-[320px] overflow-y-auto pr-2 custom-scrollbar">
+                        {allModels.map(model => (
+                          <button
+                            key={model.id}
+                            onClick={() => setSelectedModel(model)}
+                            className={cn(
+                              "flex flex-col p-4 rounded-2xl border text-left transition-all relative overflow-hidden group",
+                              selectedModel.id === model.id 
+                                ? "bg-white border-white text-black" 
+                                : "glass border-white/5 text-zinc-400 hover:border-white/20"
                             )}
-                          </div>
+                          >
+                            <div className="flex items-center justify-between relative z-10">
+                              <span className="font-bold text-sm">{model.name}</span>
+                              {model.isUncensored && (
+                                <span className={cn(
+                                  "text-[8px] px-2 py-0.5 rounded-full font-black uppercase tracking-tighter",
+                                  selectedModel.id === model.id ? "bg-black text-white" : "bg-red-500/20 text-red-400"
+                                )}>
+                                  Uncensored
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-[10px] opacity-70 mt-1 relative z-10 leading-relaxed">{model.description}</span>
+                            {selectedModel.id === model.id && (
+                              <motion.div layoutId="active-model" className="absolute inset-0 bg-white" />
+                            )}
+                          </button>
                         ))}
                       </div>
                     </div>
 
-                    <div className="space-y-4 p-4 bg-zinc-950 rounded-2xl border border-zinc-800">
-                      <div className="flex items-center gap-2 text-zinc-400">
-                        <Sliders size={14} />
-                        <span className="text-xs font-bold uppercase tracking-wider">Advanced Settings</span>
-                      </div>
-                      
-                      <div className="space-y-3">
-                        <div className="space-y-1">
-                          <div className="flex justify-between text-[10px] font-bold uppercase text-zinc-500">
-                            <span>Temperature</span>
-                            <span>{temperature}</span>
-                          </div>
-                          <input 
-                            type="range" min="0" max="2" step="0.1"
-                            value={temperature}
-                            onChange={(e) => setTemperature(parseFloat(e.target.value))}
-                            className="w-full accent-zinc-100"
-                          />
-                        </div>
-
-                        <div className="space-y-1">
-                          <div className="flex justify-between text-[10px] font-bold uppercase text-zinc-500">
-                            <span>Max Tokens</span>
-                            <span>{maxTokens}</span>
-                          </div>
-                          <input 
-                            type="range" min="256" max="8192" step="256"
-                            value={maxTokens}
-                            onChange={(e) => setMaxTokens(parseInt(e.target.value))}
-                            className="w-full accent-zinc-100"
-                          />
-                        </div>
+                    <div className="space-y-3">
+                      <label className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-500">Import HF Repo</label>
+                      <div className="flex gap-2">
+                        <input 
+                          value={newModelRepo}
+                          onChange={(e) => setNewModelRepo(e.target.value)}
+                          placeholder="NousResearch/Hermes-3-Llama-3.1-8B"
+                          className="flex-1 glass border-white/10 rounded-xl p-3 text-xs focus:outline-none focus:border-white/20 transition-all"
+                        />
+                        <button 
+                          onClick={addCustomModel}
+                          className="bg-white text-black px-4 rounded-xl text-xs font-bold hover:bg-zinc-200 transition-all active:scale-95"
+                        >
+                          Import
+                        </button>
                       </div>
                     </div>
 
-                    <div className="space-y-2">
-                      <label className="text-xs font-bold uppercase tracking-wider text-zinc-500">System Message</label>
+                    <div className="space-y-3">
+                      <label className="text-[10px] font-black uppercase tracking-[0.2em] text-zinc-500">System Instruction</label>
                       <textarea 
                         value={systemMessage}
                         onChange={(e) => setSystemMessage(e.target.value)}
-                        placeholder="e.g. You are a helpful assistant that speaks like a pirate."
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-sm h-24 focus:outline-none focus:ring-2 focus:ring-zinc-700 transition-all"
+                        placeholder="Define the AI's persona..."
+                        className="w-full glass border-white/10 rounded-2xl p-4 text-xs h-28 focus:outline-none focus:border-white/20 transition-all resize-none"
                       />
                     </div>
                   </div>
 
-                  <div className="pt-4 border-t border-zinc-800">
+                  <div className="pt-2">
                     <button 
                       onClick={createNewChat}
-                      className="w-full bg-zinc-100 text-zinc-950 py-3 rounded-xl font-bold hover:bg-zinc-200 transition-all"
+                      className="w-full bg-white text-black py-4 rounded-2xl font-bold hover:bg-zinc-200 transition-all shadow-xl active:scale-[0.98]"
                     >
-                      Apply & Start New Chat
+                      Initialize New Session
                     </button>
                   </div>
                 </div>
