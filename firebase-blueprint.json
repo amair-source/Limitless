@@ -37,7 +37,8 @@
         "chatId": { "type": "string" },
         "role": { "type": "string", "enum": ["user", "assistant"] },
         "content": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "createdAt": { "type": "string", "format": "date-time" },
+        "feedback": { "type": "string", "enum": ["up", "down", null] }
       },
       "required": ["chatId", "role", "content"]
     }

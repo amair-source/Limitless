@@ -19,6 +19,7 @@ To deploy this application to Render:
 3. **Build Settings**:
    - **Build Command**: `npm run build`
    - **Publish Directory**: `dist`
+   - **Note**: If you see a "Blocked request" error regarding the host, ensure the domain is added to `allowedHosts` in `vite.config.ts`.
 4. **Environment Variables**:
    Add the following variables in the Render dashboard:
    - `GEMINI_API_KEY`: Your Google Gemini API Key.
