@@ -3,16 +3,15 @@ import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/
 import { getFirestore } from 'firebase/firestore';
 import firebaseConfigData from '../../firebase-applet-config.json';
 
-// Use environment variables if available (for external deployment like Render)
-// Otherwise fallback to the local config file
+// Hardcoded Firebase configuration for production stability
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || firebaseConfigData.apiKey,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfigData.authDomain,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || firebaseConfigData.projectId,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfigData.storageBucket,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfigData.messagingSenderId,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || firebaseConfigData.appId,
-  firestoreDatabaseId: import.meta.env.VITE_FIREBASE_DATABASE_ID || firebaseConfigData.firestoreDatabaseId
+  apiKey: "AIzaSyDoynbp6uDsy1wp1_OJ3IXq8X6NtjNAFJk",
+  authDomain: "gen-lang-client-0166371823.firebaseapp.com",
+  projectId: "gen-lang-client-0166371823",
+  storageBucket: "gen-lang-client-0166371823.firebasestorage.app",
+  messagingSenderId: "1090219963731",
+  appId: "1:1090219963731:web:7e3c665d91333972b0dda6",
+  firestoreDatabaseId: "ai-studio-00229b6c-7c5d-417e-9dd5-1c7f83eac006"
 };
 
 const app = initializeApp(firebaseConfig);
