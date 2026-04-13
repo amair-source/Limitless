@@ -27,6 +27,7 @@ export default function App() {
   // Chat settings
   const [selectedModel, setSelectedModel] = useState<ChatModel>(DEFAULT_MODELS[0]);
   const [systemMessage, setSystemMessage] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -37,6 +38,29 @@ export default function App() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Auto-save settings and draft
+  useEffect(() => {
+    if (!user || !currentChatId || loading) return;
+
+    const saveTimeout = setTimeout(async () => {
+      setIsSaving(true);
+      try {
+        await updateDoc(doc(db, 'chats', currentChatId), {
+          modelId: selectedModel.id,
+          systemMessage: systemMessage,
+          draft: input,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        console.error("Auto-save failed:", error);
+      } finally {
+        setIsSaving(false);
+      }
+    }, 1500); // Save after 1.5s of inactivity
+
+    return () => clearTimeout(saveTimeout);
+  }, [selectedModel, systemMessage, input, currentChatId, user]);
 
   // Fetch chats
   useEffect(() => {
@@ -80,6 +104,7 @@ export default function App() {
       const model = DEFAULT_MODELS.find(m => m.id === chat.modelId) || DEFAULT_MODELS[0];
       setSelectedModel(model);
       setSystemMessage(chat.systemMessage || '');
+      setInput(chat.draft || '');
     }
 
     return () => unsubscribe();
@@ -409,6 +434,17 @@ export default function App() {
           </div>
           
           <div className="flex items-center gap-3">
+            {isSaving && (
+              <motion.div 
+                initial={{ opacity: 0, x: 10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0 }}
+                className="flex items-center gap-2 px-3 py-1.5 glass rounded-full border-white/5"
+              >
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-[9px] uppercase tracking-widest font-bold text-zinc-500">Auto-saving</span>
+              </motion.div>
+            )}
             <button 
               onClick={() => setShowSettings(!showSettings)}
               className={cn(
@@ -539,17 +575,59 @@ export default function App() {
               animate={{ opacity: 1, y: 0 }}
               className="flex gap-4 sm:gap-6 max-w-5xl mx-auto"
             >
-              <div className="w-10 h-10 rounded-2xl glass border border-white/10 flex items-center justify-center text-zinc-400">
+              <div className="w-10 h-10 rounded-2xl glass border border-white/10 flex items-center justify-center text-zinc-400 relative overflow-hidden">
                 <Bot size={20} />
+                <motion.div 
+                  animate={{ 
+                    top: ["100%", "-100%"],
+                    left: ["-100%", "100%"]
+                  }}
+                  transition={{ repeat: Infinity, duration: 2, ease: "linear" }}
+                  className="absolute w-full h-full bg-white/10 rotate-45"
+                />
               </div>
               <div className="flex flex-col gap-2">
-                <div className="flex items-center gap-1.5 p-5 glass rounded-3xl rounded-tl-none border-white/5">
-                  <motion.span animate={{ scale: [1, 1.5, 1], opacity: [0.5, 1, 0.5] }} transition={{ repeat: Infinity, duration: 1 }} className="w-2 h-2 bg-white rounded-full" />
-                  <motion.span animate={{ scale: [1, 1.5, 1], opacity: [0.5, 1, 0.5] }} transition={{ repeat: Infinity, duration: 1, delay: 0.2 }} className="w-2 h-2 bg-white rounded-full" />
-                  <motion.span animate={{ scale: [1, 1.5, 1], opacity: [0.5, 1, 0.5] }} transition={{ repeat: Infinity, duration: 1, delay: 0.4 }} className="w-2 h-2 bg-white rounded-full" />
+                <div className="flex items-center gap-2 p-6 glass rounded-3xl rounded-tl-none border-white/5 relative overflow-hidden group">
+                  <div className="flex gap-1.5">
+                    {[0, 1, 2].map((i) => (
+                      <motion.div
+                        key={i}
+                        animate={{ 
+                          scale: [1, 1.4, 1],
+                          opacity: [0.3, 1, 0.3],
+                          backgroundColor: ["#ffffff", "#a1a1aa", "#ffffff"]
+                        }}
+                        transition={{ 
+                          repeat: Infinity, 
+                          duration: 1.2, 
+                          delay: i * 0.2,
+                          ease: "easeInOut"
+                        }}
+                        className="w-2.5 h-2.5 rounded-full shadow-[0_0_10px_rgba(255,255,255,0.5)]"
+                      />
+                    ))}
+                  </div>
+                  
+                  {/* Dynamic pulse effect */}
+                  <motion.div 
+                    animate={{ opacity: [0, 0.1, 0] }}
+                    transition={{ repeat: Infinity, duration: 2 }}
+                    className="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent -skew-x-12"
+                  />
                 </div>
-                <span className="text-[10px] uppercase tracking-[0.2em] font-black text-zinc-600 px-2 animate-pulse">
-                  AI is thinking...
+                <span className="text-[10px] uppercase tracking-[0.3em] font-black text-zinc-600 px-2 flex items-center gap-2">
+                  <motion.span 
+                    animate={{ opacity: [0.4, 1, 0.4] }}
+                    transition={{ repeat: Infinity, duration: 1.5 }}
+                  >
+                    Neural processing
+                  </motion.span>
+                  <motion.span
+                    animate={{ x: [0, 4, 0] }}
+                    transition={{ repeat: Infinity, duration: 1 }}
+                  >
+                    ...
+                  </motion.span>
                 </span>
               </div>
             </motion.div>
