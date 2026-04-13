@@ -7,18 +7,45 @@ export async function chatWithGemini(modelId: string, messages: { role: string, 
     console.log(`Calling Gemini with model: ${modelId}`, { messageCount: messages.length });
     
     // Ensure roles alternate and start with user
-    const contents = messages.map(m => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }]
-    }));
+    const contents: any[] = [];
+    let lastRole = '';
 
-    const response = await ai.models.generateContent({
+    for (const m of messages) {
+      const mappedRole = m.role === 'assistant' ? 'model' : 'user';
+      if (mappedRole === lastRole) {
+        // Merge with previous message of the same role
+        contents[contents.length - 1].parts[0].text += '\n\n' + m.content;
+      } else {
+        contents.push({
+          role: mappedRole,
+          parts: [{ text: m.content }]
+        });
+        lastRole = mappedRole;
+      }
+    }
+
+    // Gemini requires the first message to be from the user
+    if (contents.length > 0 && contents[0].role !== 'user') {
+      contents.unshift({
+        role: 'user',
+        parts: [{ text: '(Conversation started by assistant)' }]
+      });
+    }
+
+    // Add a timeout to prevent hanging
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error("Gemini API request timed out after 30 seconds")), 30000)
+    );
+
+    const responsePromise = ai.models.generateContent({
       model: modelId,
       contents: contents,
       config: {
         systemInstruction: systemInstruction || "You are a helpful assistant.",
       }
     });
+
+    const response = await Promise.race([responsePromise, timeoutPromise]) as any;
 
     if (!response.text) {
       console.warn("Gemini returned no text. Full response:", response);

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from './lib/AuthContext';
 import { signInWithGoogle, logout, db } from './lib/firebase';
-import { collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp, doc, updateDoc, deleteDoc, getDocs } from 'firebase/firestore';
+import { collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp, doc, updateDoc, deleteDoc, getDocs, setDoc } from 'firebase/firestore';
 import { MessageSquare, Plus, LogOut, Send, User as UserIcon, Bot, Settings, Trash2, Menu, X, ChevronRight, Github, Search, Copy, ThumbsUp, ThumbsDown, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ReactMarkdown from 'react-markdown';
@@ -112,6 +112,7 @@ export default function App() {
 
   const createNewChat = async () => {
     if (!user) return;
+    const newChatRef = doc(collection(db, 'chats'));
     const newChat = {
       userId: user.uid,
       title: 'New Chat',
@@ -120,12 +121,18 @@ export default function App() {
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
+    
+    // Optimistically set the UI state
+    setCurrentChatId(newChatRef.id);
+    setShowSettings(false);
+    
     try {
-      const docRef = await addDoc(collection(db, 'chats'), newChat);
-      setCurrentChatId(docRef.id);
-      setShowSettings(false);
+      // Don't await to prevent hanging if offline
+      setDoc(newChatRef, newChat).catch(error => {
+        console.error("Failed to create chat:", error);
+      });
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'chats');
+      console.error("Error initiating chat:", error);
     }
   };
 
@@ -133,12 +140,15 @@ export default function App() {
     e.stopPropagation();
     if (confirm('Are you sure you want to delete this chat?')) {
       try {
-        await deleteDoc(doc(db, 'chats', id));
+        // Optimistically update UI
         if (currentChatId === id) {
           setCurrentChatId(chats.find(c => c.id !== id)?.id || null);
         }
+        deleteDoc(doc(db, 'chats', id)).catch(error => {
+          console.error("Failed to delete chat:", error);
+        });
       } catch (error) {
-        handleFirestoreError(error, OperationType.DELETE, `chats/${id}`);
+        console.error("Error initiating delete:", error);
       }
     }
   };
@@ -153,24 +163,24 @@ export default function App() {
     setIsSending(true);
 
     try {
-      // 1. Add user message to Firestore
-      await addDoc(collection(db, `chats/${currentChatId}/messages`), {
+      // 1. Add user message to Firestore (optimistic, don't await)
+      addDoc(collection(db, `chats/${currentChatId}/messages`), {
         chatId: currentChatId,
         role: 'user',
         content: userMessage,
         createdAt: serverTimestamp(),
-      });
+      }).catch(err => console.error("Failed to save user message:", err));
 
-      // Update chat title if it's the first message
+      // Update chat title if it's the first message (optimistic)
       if (currentHistory.length === 0) {
-        await updateDoc(doc(db, 'chats', currentChatId), {
+        updateDoc(doc(db, 'chats', currentChatId), {
           title: userMessage.slice(0, 30) + (userMessage.length > 30 ? '...' : ''),
           updatedAt: serverTimestamp(),
-        });
+        }).catch(err => console.error("Failed to update chat title:", err));
       } else {
-        await updateDoc(doc(db, 'chats', currentChatId), {
+        updateDoc(doc(db, 'chats', currentChatId), {
           updatedAt: serverTimestamp(),
-        });
+        }).catch(err => console.error("Failed to update chat timestamp:", err));
       }
 
       // 2. Get AI response
@@ -184,17 +194,25 @@ export default function App() {
         aiResponse = await chatWithGemini(selectedModel.id, chatHistory, systemMessage);
       }
 
-      // 3. Add AI message to Firestore
-      await addDoc(collection(db, `chats/${currentChatId}/messages`), {
+      // 3. Add AI message to Firestore (optimistic)
+      addDoc(collection(db, `chats/${currentChatId}/messages`), {
         chatId: currentChatId,
         role: 'assistant',
         content: aiResponse,
         createdAt: serverTimestamp(),
         feedback: null, // Initial feedback state
-      });
+      }).catch(err => console.error("Failed to save AI message:", err));
 
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `chats/${currentChatId}`);
+    } catch (error: any) {
+      console.error("Error in handleSendMessage:", error);
+      // Show error in the UI instead of throwing it to the void
+      setMessages(prev => [...prev, {
+        id: 'error-' + Date.now(),
+        chatId: currentChatId,
+        role: 'assistant',
+        content: `**Error:** ${error.message || "Failed to send message. Please check your API key and connection."}`,
+        createdAt: { toDate: () => new Date() },
+      }]);
     } finally {
       setIsSending(false);
     }
